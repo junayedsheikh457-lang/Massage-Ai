@@ -343,7 +343,7 @@ app.post("/webhook",async(req,res)=>{
       const budget = text ? extractBudget(text) : null;
       if (budget !== null) {
         await showProductsWithinBudget(psid,budget,category);
-      } else if (hasImage && !text) {
+      } else if (hasImage) {
         const customerImages=await getMessengerImages(attachments);
         if(!customerImages.length) {
           await sendMessenger(psid,"ছবিটি পেয়েছি 💗 কিন্তু ছবিটি পড়া যাচ্ছে না। দয়া করে পরিষ্কার ছবি আবার পাঠান।");
