@@ -138,20 +138,30 @@ async function answerCustomer(message, imageParts=[]) {
     try {
       const parts = [{text: prompt + "\\n\\nCustomer message: " + (message || (imageParts.length ? "এই ছবির পোশাকটি দেখে সাহায্য করুন।" : "হ্যালো"))}];
       for (const image of imageParts) parts.push({inline_data:{mime_type:image.mimeType,data:image.data}});
-      const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
-        method:"POST",
-        headers:{"content-type":"application/json"},
-        body:JSON.stringify({
-          contents:[{role:"user",parts}],
-          generationConfig:{temperature:0.4,maxOutputTokens:300}
-        })
-      });
-      const data = await r.json();
-      if (r.ok) {
-        const out = data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim();
-        if (out) return out;
-      } else console.error("Gemini API error:", JSON.stringify(data).slice(0,700));
+      // Retry with Google's currently recommended model if Render still has an older model configured.
+      const configuredModel = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+      const modelsToTry = configuredModel === "gemini-3.5-flash-lite"
+        ? [configuredModel]
+        : [configuredModel, "gemini-3.5-flash-lite"];
+      for (const model of modelsToTry) {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
+          method:"POST",
+          headers:{"content-type":"application/json"},
+          body:JSON.stringify({
+            contents:[{role:"user",parts}],
+            generationConfig:{temperature:0.4,maxOutputTokens:300}
+          })
+        });
+        const data = await r.json();
+        if (r.ok) {
+          const out = data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim();
+          if (out) return out;
+          console.error("Gemini returned no text:", JSON.stringify(data).slice(0,500));
+          break;
+        }
+        console.error("Gemini API error (" + model + "):", JSON.stringify(data).slice(0,700));
+        if (r.status !== 404) break;
+      }
     } catch(e) { console.error("Gemini request error:",e.message); }
   } else {
     console.warn("GEMINI_API_KEY missing; AI replies are disabled. Add GEMINI_API_KEY in Render.");
