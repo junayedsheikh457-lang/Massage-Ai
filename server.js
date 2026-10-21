@@ -103,12 +103,61 @@ async function allProducts(activeOnly=false) {
   return memory.products.filter(p => !activeOnly || p.active);
 }
 async function sendMessenger(psid, text) {
-  if (!process.env.PAGE_ACCESS_TOKEN) { console.warn("PAGE_ACCESS_TOKEN missing; cannot send Messenger reply"); return; }
+  if (!process.env.PAGE_ACCESS_TOKEN) { console.warn("PAGE_ACCESS_TOKEN missing; cannot send Messenger reply"); return false; }
   const resp = await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(process.env.PAGE_ACCESS_TOKEN)}`, {
     method:"POST", headers:{"content-type":"application/json"},
     body:JSON.stringify({recipient:{id:psid},message:{text:String(text).slice(0,1900)}})
   });
-  if (!resp.ok) console.error("Messenger send failed:", await resp.text());
+  if (!resp.ok) { console.error("Messenger send failed:", await resp.text()); return false; }
+  return true;
+}
+async function sendMessengerImage(psid, imageUrl) {
+  if (!process.env.PAGE_ACCESS_TOKEN) return false;
+  try {
+    const url = new URL(String(imageUrl || ""));
+    if (url.protocol !== "https:") return false;
+    const resp = await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(process.env.PAGE_ACCESS_TOKEN)}`, {
+      method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({recipient:{id:psid},message:{attachment:{type:"image",payload:{url:url.toString(),is_reusable:true}}}})
+    });
+    if (!resp.ok) { console.error("Messenger image send failed:", await resp.text()); return false; }
+    return true;
+  } catch(e) { console.error("Invalid product image URL:",e.message); return false; }
+}
+function normalizeDigits(value) {
+  return String(value).replace(/[০-৯]/g, d => "০১২৩৪৫৬৭৮৯".indexOf(d));
+}
+function extractBudget(message) {
+  const text = normalizeDigits(message).toLowerCase();
+  if (!/(মধ্যে|মাঝে|modd?e|modde|moddhe|moddhey|within|under|budget|এর মধ্যে|টাকার মধ্যে)/i.test(text)) return null;
+  const match = text.match(/(?:৳\s*)?(\d{2,7})(?:\s*(?:টাকা|টাকার|tk|taka|tkar|takar))?/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+async function showProductsWithinBudget(psid, budget) {
+  const products = (await allProducts(true))
+    .filter(p => Number(p.price) > 0 && Number(p.price) <= budget && Number(p.stock ?? 0) > 0)
+    .sort((a,b) => Number(a.price)-Number(b.price))
+    .slice(0,5);
+  if (!products.length) {
+    const available = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.stock ?? 0)>0);
+    const lowest = available.sort((a,b)=>Number(a.price)-Number(b.price))[0];
+    const msg = lowest
+      ? `দুঃখিত 💗 এখন ${budget} টাকার মধ্যে স্টকে থাকা পোশাক পাইনি। আমাদের সবচেয়ে কম দামের স্টকে থাকা পোশাক ${lowest.name} — ${Number(lowest.price)} টাকা।`
+      : "দুঃখিত 💗 এখন স্টকে থাকা পোশাক পাওয়া যাচ্ছে না। নতুন স্টক যোগ হলে জানাব।";
+    await sendMessenger(psid,msg);
+    return true;
+  }
+  const lines = products.map((p,i) => `${i+1}. ${p.name} — ${Number(p.price)} টাকা${p.sizes ? " | সাইজ: "+p.sizes : ""}${p.offer ? " | অফার: "+p.offer : ""}`);
+  await sendMessenger(psid,`অবশ্যই! 💗 ${budget} টাকার মধ্যে স্টকে থাকা ${products.length}টি পোশাক দেখুন:\\n\\n${lines.join("\\n")}\\n\\nযে পোশাকটি পছন্দ হবে তার নম্বর বা নাম লিখুন।`);
+  for (const p of products) {
+    if (p.image_url) {
+      const ok = await sendMessengerImage(psid,p.image_url);
+      if (!ok) await sendMessenger(psid,`📸 ${p.name} — ${Number(p.price)} টাকা। ছবিটি পাঠানো যায়নি; অ্যাডমিন প্যানেলে ছবির public HTTPS link ঠিক আছে কি না দেখুন।`);
+    }
+  }
+  return true;
 }
 function signatureOk(req) {
   const secret = process.env.META_APP_SECRET;
@@ -217,7 +266,10 @@ app.post("/webhook",async(req,res)=>{
       const attachments=Array.isArray(message.attachments)?message.attachments:[];
       const hasImage=attachments.some(a=>a?.type==="image" && a.payload?.url);
       if(!text && !hasImage) continue;
-      if(text && /discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
+      const budget = text ? extractBudget(text) : null;
+      if (budget !== null) {
+        await showProductsWithinBudget(psid,budget);
+      } else if(text && /discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
         if(pool) await query("INSERT INTO discounts(psid,customer_message) VALUES($1,$2)",[psid,text]);
         else memory.discounts.push({id:Date.now(),psid,customer_message:text,status:"pending"});
         await sendMessenger(psid,"বিশেষ ছাড়ের অনুরোধটি মালিকের কাছে পাঠানোর জন্য নোট করেছি। অনুমতি পেলেই জানাব। 💗");
