@@ -397,6 +397,24 @@ app.post("/api/products",adminAuth,async(req,res)=>{
     res.status(201).json(p);
   }catch(e){res.status(500).json({error:e.message});}
 });
+app.delete("/api/products/bulk",adminAuth,async(req,res)=>{
+  const raw=req.body?.ids;
+  if(!Array.isArray(raw) || !raw.length || raw.length>500) return res.status(400).json({error:"Select between 1 and 500 products"});
+  const ids=[...new Set(raw.map(x=>String(x)).filter(x=>/^\d+$/.test(x)))];
+  if(!ids.length) return res.status(400).json({error:"No valid product IDs selected"});
+  try {
+    let deleted=0;
+    if(pool) {
+      const result=await query("DELETE FROM products WHERE id = ANY($1::bigint[]) RETURNING id",[ids]);
+      deleted=result.rowCount;
+    } else {
+      const before=memory.products.length;
+      memory.products=memory.products.filter(p=>!ids.includes(String(p.id)));
+      deleted=before-memory.products.length;
+    }
+    res.json({ok:true,deleted});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
 app.delete("/api/products/:id",adminAuth,async(req,res)=>{
   try {
     if(pool) {
