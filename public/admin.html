@@ -22,6 +22,6 @@ async function deleteProduct(id){if(!confirm("এই পণ্যটি ও ত�
 async function toggleProduct(id,active){try{await api("/api/products/"+id,{method:"PATCH",body:JSON.stringify({active})});load("products")}catch(e){alert(e.message)}}
 async function discount(id,status){try{await api("/api/discounts/"+id,{method:"PATCH",body:JSON.stringify({status})});load("discounts")}catch(e){alert(e.message)}}
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-document.getElementById("productSearch").addEventListener("input",()=>load("products"));
+document.getElementById("productSearch").addEventListener("change",()=>load("products"));
 async function deleteSelected(){const ids=Array.from(document.querySelectorAll(".product-check:checked")).map(x=>Number(x.value));if(!ids.length)return;if(!confirm("নির্বাচিত "+ids.length+"টি পণ্য স্থায়ীভাবে ডিলিট করবেন? এই কাজ ফেরানো যাবে না।"))return;const btn=document.getElementById("bulkDeleteBtn");btn.disabled=true;btn.textContent="ডিলিট হচ্ছে...";try{const result=await api("/api/products/bulk",{method:"DELETE",body:JSON.stringify({ids})});await load("products");document.getElementById("msg").textContent=result.deleted+"টি পণ্য একসাথে ডিলিট হয়েছে 💗"}catch(e){alert(e.message)}finally{btn.textContent="🗑️ একসাথে ডিলিট";syncSelection()}}
 </script></body></html>
