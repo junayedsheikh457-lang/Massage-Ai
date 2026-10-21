@@ -7,7 +7,7 @@ dotenv.config();
 const { Pool } = pg;
 const app = express();
 app.use(cors({ origin: process.env.ADMIN_ORIGIN || true }));
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+app.use(express.json({ limit: "6mb", verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.static("public"));
 const pool = process.env.DATABASE_URL ? new Pool({
   connectionString: process.env.DATABASE_URL,
