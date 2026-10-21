@@ -53,6 +53,19 @@ async function initDb() {
   if (!colSet.has("stock")) await query("ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0");
   if (!colSet.has("active")) await query("ALTER TABLE products ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE");
   if (!colSet.has("created_at")) await query("ALTER TABLE products ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW()");
+  // Legacy databases may have an extra NOT NULL "data" column not used by this app.
+  // Give it a safe default so current product inserts can work without deleting legacy data.
+  const dataInfo = await query("SELECT data_type, is_nullable FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'products' AND column_name = 'data'");
+  if (dataInfo.rows.length && dataInfo.rows[0].is_nullable === "NO") {
+    const dataType = dataInfo.rows[0].data_type;
+    if (dataType === "json" || dataType === "jsonb") {
+      await query("ALTER TABLE products ALTER COLUMN data SET DEFAULT '{}'::jsonb");
+    } else if (["text", "character varying", "character"].includes(dataType)) {
+      await query("ALTER TABLE products ALTER COLUMN data SET DEFAULT ''");
+    } else {
+      await query("ALTER TABLE products ALTER COLUMN data DROP NOT NULL");
+    }
+  }
   // Repair legacy numeric IDs that are NOT NULL but have no auto-generated default.
   // Use separate parameterized queries rather than a DO block (node-postgres extended protocol).
   const idInfo = await query("SELECT data_type, column_default, is_identity FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'products' AND column_name = 'id'");
