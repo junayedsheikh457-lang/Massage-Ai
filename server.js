@@ -25,6 +25,25 @@ async function initDb() {
     price NUMERIC(12,2) NOT NULL DEFAULT 0, offer TEXT DEFAULT '', image_url TEXT DEFAULT '',
     sizes TEXT DEFAULT '', stock INTEGER NOT NULL DEFAULT 0, active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW())`);
+  // Upgrade older products tables created by earlier versions of this app.
+  const productCols = await query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'products'");
+  const colSet = new Set(productCols.rows.map(r => r.column_name));
+  for (const [oldName, newName] of [["product_name","name"],["title","name"],["product_description","description"],["image","image_url"],["size","sizes"],["quantity","stock"],["is_active","active"]]) {
+    if (!colSet.has(newName) && colSet.has(oldName)) {
+      await query(`ALTER TABLE products RENAME COLUMN "${oldName}" TO "${newName}"`);
+      colSet.delete(oldName); colSet.add(newName);
+    }
+  }
+  if (!colSet.has("name")) { await query("ALTER TABLE products ADD COLUMN name TEXT"); colSet.add("name"); }
+  if (!colSet.has("description")) await query("ALTER TABLE products ADD COLUMN description TEXT DEFAULT ''");
+  if (!colSet.has("price")) await query("ALTER TABLE products ADD COLUMN price NUMERIC(12,2) NOT NULL DEFAULT 0");
+  if (!colSet.has("offer")) await query("ALTER TABLE products ADD COLUMN offer TEXT DEFAULT ''");
+  if (!colSet.has("image_url")) await query("ALTER TABLE products ADD COLUMN image_url TEXT DEFAULT ''");
+  if (!colSet.has("sizes")) await query("ALTER TABLE products ADD COLUMN sizes TEXT DEFAULT ''");
+  if (!colSet.has("stock")) await query("ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0");
+  if (!colSet.has("active")) await query("ALTER TABLE products ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE");
+  if (!colSet.has("created_at")) await query("ALTER TABLE products ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW()");
+
   await query(`CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY, customer_name TEXT DEFAULT '', phone TEXT DEFAULT '',
     address TEXT DEFAULT '', items JSONB DEFAULT '[]', total NUMERIC(12,2) DEFAULT 0,
