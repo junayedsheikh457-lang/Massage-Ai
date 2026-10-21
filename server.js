@@ -21,12 +21,13 @@ async function query(sql, params=[]) {
 async function initDb() {
   if (!pool) return;
   await query(`CREATE TABLE IF NOT EXISTS products (
-    id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
+    id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, category TEXT DEFAULT 'other', description TEXT DEFAULT '',
     price NUMERIC(12,2) NOT NULL DEFAULT 0, offer TEXT DEFAULT '', image_url TEXT DEFAULT '',
     sizes TEXT DEFAULT '', stock INTEGER NOT NULL DEFAULT 0, active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW())`);
   // Ensure every column used by the current API exists, even on legacy tables.
   await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'other'");
   await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''");
   await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS price NUMERIC(12,2) NOT NULL DEFAULT 0");
   await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS offer TEXT DEFAULT ''");
@@ -45,6 +46,7 @@ async function initDb() {
     }
   }
   if (!colSet.has("name")) { await query("ALTER TABLE products ADD COLUMN name TEXT"); colSet.add("name"); }
+  if (!colSet.has("category")) await query("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'other'");
   if (!colSet.has("description")) await query("ALTER TABLE products ADD COLUMN description TEXT DEFAULT ''");
   if (!colSet.has("price")) await query("ALTER TABLE products ADD COLUMN price NUMERIC(12,2) NOT NULL DEFAULT 0");
   if (!colSet.has("offer")) await query("ALTER TABLE products ADD COLUMN offer TEXT DEFAULT ''");
@@ -151,13 +153,13 @@ function extractBudget(message) {
   const amount = Number(match[1]);
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
-async function showProductsWithinBudget(psid, budget) {
+async function showProductsWithinBudget(psid, budget, category=null) {
   const products = (await allProducts(true))
-    .filter(p => Number(p.price) > 0 && Number(p.price) <= budget && Number(p.stock ?? 0) > 0)
+    .filter(p => Number(p.price) > 0 && Number(p.price) <= budget && Number(p.stock ?? 0) > 0 && (!category || String(p.category||"").toLowerCase()===category))
     .sort((a,b) => Number(a.price)-Number(b.price))
     .slice(0,5);
   if (!products.length) {
-    const available = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.stock ?? 0)>0);
+    const available = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.stock ?? 0)>0 && (!category || String(p.category||"").toLowerCase()===category));
     const lowest = available.sort((a,b)=>Number(a.price)-Number(b.price))[0];
     const msg = lowest
       ? `দুঃখিত 💗 এখন ${budget} টাকার মধ্যে স্টকে থাকা পোশাক পাইনি। আমাদের সবচেয়ে কম দামের স্টকে থাকা পোশাক ${lowest.name} — ${Number(lowest.price)} টাকা।`
@@ -282,9 +284,10 @@ app.post("/webhook",async(req,res)=>{
       const attachments=Array.isArray(message.attachments)?message.attachments:[];
       const hasImage=attachments.some(a=>a?.type==="image" && a.payload?.url);
       if(!text && !hasImage) continue;
+      const category = /2\s*pis|two\s*piece|two-piece|টু\s*পিস|দুই\s*পিস/i.test(text) ? "two-piece" : /kurti|কুর্তি/i.test(text) ? "kurti" : null;
       const budget = text ? extractBudget(text) : null;
       if (budget !== null) {
-        await showProductsWithinBudget(psid,budget);
+        await showProductsWithinBudget(psid,budget,category);
       } else if(text && /discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
         if(pool) await query("INSERT INTO discounts(psid,customer_message) VALUES($1,$2)",[psid,text]);
         else memory.discounts.push({id:Date.now(),psid,customer_message:text,status:"pending"});
@@ -298,18 +301,18 @@ app.post("/webhook",async(req,res)=>{
 });
 app.get("/api/products",adminAuth,async(req,res)=>{try{res.json(await allProducts(false));}catch(e){res.status(500).json({error:e.message});}});
 app.post("/api/products",adminAuth,async(req,res)=>{
-  const {name,description="",price,offer="",image_url="",sizes="",stock=0,active=true}=req.body||{};
+  const {name,category="other",description="",price,offer="",image_url="",sizes="",stock=0,active=true}=req.body||{};
   if(!name || !Number.isFinite(Number(price)) || Number(price)<0) return res.status(400).json({error:"Valid product name and price required"});
   try {
     let p;
-    if(pool){const r=await query("INSERT INTO products(name,description,price,offer,image_url,sizes,stock,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",[name,description,price,offer,image_url,sizes,stock,active]);p=r.rows[0];}
-    else {p={id:Date.now(),name,description,price:Number(price),offer,image_url,sizes,stock:Number(stock),active:!!active};memory.products.unshift(p);}
+    if(pool){const r=await query("INSERT INTO products(name,category,description,price,offer,image_url,sizes,stock,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",[name,category,description,price,offer,image_url,sizes,stock,active]);p=r.rows[0];}
+    else {p={id:Date.now(),name,category,description,price:Number(price),offer,image_url,sizes,stock:Number(stock),active:!!active};memory.products.unshift(p);}
     res.status(201).json(p);
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.patch("/api/products/:id",adminAuth,async(req,res)=>{
   try {
-    const keys=["name","description","price","offer","image_url","sizes","stock","active"];
+    const keys=["name","category","description","price","offer","image_url","sizes","stock","active"];
     const body=req.body||{}, fields=keys.filter(k=>body[k]!==undefined);
     if(!fields.length) return res.status(400).json({error:"No fields supplied"});
     let p;
