@@ -156,8 +156,7 @@ function extractBudget(message) {
 async function showProductsWithinBudget(psid, budget, category=null) {
   const products = (await allProducts(true))
     .filter(p => Number(p.price) > 0 && Number(p.price) <= budget && Number(p.stock ?? 0) > 0 && (!category || String(p.category||"").toLowerCase()===category))
-    .sort((a,b) => Number(a.price)-Number(b.price))
-    .slice(0,5);
+    .sort((a,b) => Number(a.price)-Number(b.price));
   if (!products.length) {
     const available = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.stock ?? 0)>0 && (!category || String(p.category||"").toLowerCase()===category));
     const lowest = available.sort((a,b)=>Number(a.price)-Number(b.price))[0];
@@ -358,7 +357,7 @@ app.post("/webhook",async(req,res)=>{
           }
         }
       } else if(text && category && /(দেখাও|দেখান|ছবি|pic|photo|show|দাও|দেন|কিনতে|kurti|কুর্তি|2\\s*pis|two\\s*piece)/i.test(text)) {
-        const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0).slice(0,5);
+        const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0);
         if(!matches.length) await sendMessenger(psid, category==="kurti" ? "দুঃখিত 💗 এখন কুর্তি স্টকে নেই।" : "দুঃখিত 💗 এখন টু-পিস স্টকে নেই।");
         else {
           await sendMessenger(psid, (category==="kurti" ? "কুর্তি" : "টু-পিস")+" কালেকশন থেকে "+matches.length+"টি ডিজাইন দেখুন 💗\\n"+matches.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : "")).join("\\n"));
