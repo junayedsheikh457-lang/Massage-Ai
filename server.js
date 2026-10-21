@@ -25,6 +25,16 @@ async function initDb() {
     price NUMERIC(12,2) NOT NULL DEFAULT 0, offer TEXT DEFAULT '', image_url TEXT DEFAULT '',
     sizes TEXT DEFAULT '', stock INTEGER NOT NULL DEFAULT 0, active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW())`);
+  // Ensure every column used by the current API exists, even on legacy tables.
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS price NUMERIC(12,2) NOT NULL DEFAULT 0");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS offer TEXT DEFAULT ''");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT ''");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS sizes TEXT DEFAULT ''");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INTEGER NOT NULL DEFAULT 0");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE");
+  await query("ALTER TABLE products ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()");
   // Upgrade older products tables created by earlier versions of this app.
   const productCols = await query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'products'");
   const colSet = new Set(productCols.rows.map(r => r.column_name));
