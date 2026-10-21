@@ -380,11 +380,34 @@ app.post("/api/products",adminAuth,async(req,res)=>{
   if(!Number.isFinite(Number(price)) || Number(price)<0) return res.status(400).json({error:"Valid product price required"});
   const productName=String(name||"").trim() || ("ডিজাইন-"+Date.now());
   try {
+    // Skip exact duplicate catalog photos so accidental repeated uploads do not multiply products.
+    if (image_url) {
+      if (pool) {
+        const existing = await query("SELECT id FROM products WHERE category=$1 AND image_url=$2 LIMIT 1",[category,image_url]);
+        if (existing.rows.length) return res.json({duplicate:true,id:existing.rows[0].id});
+      } else {
+        const existing = memory.products.find(x=>x.category===category && x.image_url===image_url);
+        if (existing) return res.json({duplicate:true,id:existing.id});
+      }
+    }
     let p;
     if(pool){const r=await query("INSERT INTO products(name,category,description,price,offer,image_url,sizes,stock,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",[productName,category,description,price,offer,image_url,sizes,stock,active]);p=r.rows[0];}
     else {p={id:Date.now(),name:productName,category,description,price:Number(price),offer,image_url,sizes,stock:Number(stock),active:!!active};memory.products.unshift(p);}
     res.status(201).json(p);
   }catch(e){res.status(500).json({error:e.message});}
+});
+app.delete("/api/products/:id",adminAuth,async(req,res)=>{
+  try {
+    if(pool) {
+      const result=await query("DELETE FROM products WHERE id=$1 RETURNING id",[req.params.id]);
+      if(!result.rows.length) return res.sendStatus(404);
+    } else {
+      const index=memory.products.findIndex(p=>String(p.id)===String(req.params.id));
+      if(index<0) return res.sendStatus(404);
+      memory.products.splice(index,1);
+    }
+    res.json({ok:true});
+  } catch(e) { res.status(500).json({error:e.message}); }
 });
 app.patch("/api/products/:id",adminAuth,async(req,res)=>{
   try {
