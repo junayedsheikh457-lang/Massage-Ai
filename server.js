@@ -111,7 +111,13 @@ async function sendMessenger(psid, text) {
   if (!resp.ok) { console.error("Messenger send failed:", await resp.text()); return false; }
   return true;
 }
-async function sendMessengerImage(psid, imageUrl) {
+async function sendMessengerImage(psid, imageUrl, productId=null) {
+  if (String(imageUrl||"").startsWith("data:image/") && productId) {
+    let base = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
+    if (base.endsWith("/")) base = base.slice(0,-1);
+    if (!base) { console.error("Set PUBLIC_BASE_URL to the public Render URL for gallery image sending"); return false; }
+    imageUrl = base + "/product-images/" + encodeURIComponent(productId);
+  }
   if (!process.env.PAGE_ACCESS_TOKEN) return false;
   try {
     const url = new URL(String(imageUrl || ""));
@@ -124,6 +130,16 @@ async function sendMessengerImage(psid, imageUrl) {
     return true;
   } catch(e) { console.error("Invalid product image URL:",e.message); return false; }
 }
+app.get("/product-images/:id",async(req,res)=>{
+  try {
+    const products=await allProducts(false);
+    const p=products.find(x=>String(x.id)===String(req.params.id));
+    const match=String(p?.image_url||"").match(new RegExp("^data:(image/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$"));
+    if(!match) return res.sendStatus(404);
+    res.set("Content-Type",match[1]); res.set("Cache-Control","public, max-age=86400");
+    res.send(Buffer.from(match[2],"base64"));
+  } catch(e) { console.error("Product image route failed:",e.message); res.sendStatus(500); }
+});
 function normalizeDigits(value) {
   return String(value).replace(/[০-৯]/g, d => "০১২৩৪৫৬৭৮৯".indexOf(d));
 }
@@ -153,7 +169,7 @@ async function showProductsWithinBudget(psid, budget) {
   await sendMessenger(psid,`অবশ্যই! 💗 ${budget} টাকার মধ্যে স্টকে থাকা ${products.length}টি পোশাক দেখুন:\\n\\n${lines.join("\\n")}\\n\\nযে পোশাকটি পছন্দ হবে তার নম্বর বা নাম লিখুন।`);
   for (const p of products) {
     if (p.image_url) {
-      const ok = await sendMessengerImage(psid,p.image_url);
+      const ok = await sendMessengerImage(psid,p.image_url,p.id);
       if (!ok) await sendMessenger(psid,`📸 ${p.name} — ${Number(p.price)} টাকা। ছবিটি পাঠানো যায়নি; অ্যাডমিন প্যানেলে ছবির public HTTPS link ঠিক আছে কি না দেখুন।`);
     }
   }
