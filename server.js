@@ -206,10 +206,10 @@ async function answerCustomer(message, imageParts=[]) {
       const parts = [{text: prompt + "\\n\\nCustomer message: " + (message || (imageParts.length ? "এই ছবির পোশাকটি দেখে সাহায্য করুন।" : "হ্যালো"))}];
       for (const image of imageParts) parts.push({inline_data:{mime_type:image.mimeType,data:image.data}});
       // Retry with Google's currently recommended model if Render still has an older model configured.
-      const configuredModel = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-      const modelsToTry = configuredModel === "gemini-2.5-flash-lite"
+      const configuredModel = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+      const modelsToTry = configuredModel === "gemini-3.5-flash-lite"
         ? [configuredModel]
-        : [configuredModel, "gemini-2.5-flash-lite"];
+        : [configuredModel, "gemini-3.5-flash-lite"];
       for (const model of modelsToTry) {
         const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
           method:"POST",
@@ -292,8 +292,8 @@ async function findSimilarKurtis(customerImage) {
   ].join("\\n");
   const parts=[{text:prompt},{inline_data:{mime_type:customerImage.mimeType,data:customerImage.data}}];
   candidates.forEach((c,i)=>{parts.push({text:"Candidate "+(i+1)+", price "+Number(c.product.price)+" BDT"});parts.push({inline_data:{mime_type:c.mimeType,data:c.data}})});
-  const configuredModel=process.env.GEMINI_MODEL||"gemini-2.5-flash-lite";
-  const modelsToTry=configuredModel==="gemini-2.5-flash-lite"?[configuredModel]:[configuredModel,"gemini-2.5-flash-lite"];
+  const configuredModel=process.env.GEMINI_MODEL||"gemini-3.5-flash-lite";
+  const modelsToTry=configuredModel==="gemini-3.5-flash-lite"?[configuredModel]:[configuredModel,"gemini-3.5-flash-lite"];
   for(const model of modelsToTry) {
     try {
       const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,{
