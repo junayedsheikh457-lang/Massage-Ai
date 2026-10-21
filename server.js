@@ -162,7 +162,7 @@ async function showProductsWithinBudget(psid, budget, category=null) {
     const available = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.stock ?? 0)>0 && (!category || String(p.category||"").toLowerCase()===category));
     const lowest = available.sort((a,b)=>Number(a.price)-Number(b.price))[0];
     const msg = lowest
-      ? `দুঃখিত 💗 এখন ${budget} টাকার মধ্যে স্টকে থাকা পোশাক পাইনি। আমাদের সবচেয়ে কম দামের স্টকে থাকা পোশাক ${lowest.name} — ${Number(lowest.price)} টাকা।`
+      ? `দুঃখিত 💗 এখন ${budget} টাকার মধ্যে স্টকে থাকা পোশাক পাইনি। সবচেয়ে কম দামের স্টকে থাকা পোশাক ${Number(lowest.price)} টাকা।`
       : "দুঃখিত 💗 এখন স্টকে থাকা পোশাক পাওয়া যাচ্ছে না। নতুন স্টক যোগ হলে জানাব।";
     await sendMessenger(psid,msg);
     return true;
@@ -299,8 +299,8 @@ app.post("/webhook",async(req,res)=>{
         const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0).slice(0,5);
         if(!matches.length) await sendMessenger(psid, category==="kurti" ? "দুঃখিত 💗 এখন কুর্তি স্টকে নেই।" : "দুঃখিত 💗 এখন টু-পিস স্টকে নেই।");
         else {
-          await sendMessenger(psid, (category==="kurti" ? "কুর্তি" : "টু-পিস")+" কালেকশন থেকে "+matches.length+"টি ডিজাইন দেখুন 💗\\n"+matches.map((p,i)=>(i+1)+". "+p.name+" — "+Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : "")).join("\\n"));
-          for(const p of matches) if(p.image_url) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) await sendMessenger(psid,p.name+" — "+Number(p.price)+" টাকা। ছবিটি পাঠানো যায়নি।"); }
+          await sendMessenger(psid, (category==="kurti" ? "কুর্তি" : "টু-পিস")+" কালেকশন থেকে "+matches.length+"টি ডিজাইন দেখুন 💗\\n"+matches.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : "")).join("\\n"));
+          for(const p of matches) if(p.image_url) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) await sendMessenger(psid,"ছবিটি পাঠানো যায়নি। অ্যাডমিন প্যানেলে ছবির লিংক পরীক্ষা করুন।"); }
         }
       } else if(text && /discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
         if(pool) await query("INSERT INTO discounts(psid,customer_message) VALUES($1,$2)",[psid,text]);
@@ -316,11 +316,12 @@ app.post("/webhook",async(req,res)=>{
 app.get("/api/products",adminAuth,async(req,res)=>{try{res.json(await allProducts(false));}catch(e){res.status(500).json({error:e.message});}});
 app.post("/api/products",adminAuth,async(req,res)=>{
   const {name,category="other",description="",price,offer="",image_url="",sizes="",stock=0,active=true}=req.body||{};
-  if(!name || !Number.isFinite(Number(price)) || Number(price)<0) return res.status(400).json({error:"Valid product name and price required"});
+  if(!Number.isFinite(Number(price)) || Number(price)<0) return res.status(400).json({error:"Valid product price required"});
+  const productName=String(name||"").trim() || ("ডিজাইন-"+Date.now());
   try {
     let p;
-    if(pool){const r=await query("INSERT INTO products(name,category,description,price,offer,image_url,sizes,stock,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",[name,category,description,price,offer,image_url,sizes,stock,active]);p=r.rows[0];}
-    else {p={id:Date.now(),name,category,description,price:Number(price),offer,image_url,sizes,stock:Number(stock),active:!!active};memory.products.unshift(p);}
+    if(pool){const r=await query("INSERT INTO products(name,category,description,price,offer,image_url,sizes,stock,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",[productName,category,description,price,offer,image_url,sizes,stock,active]);p=r.rows[0];}
+    else {p={id:Date.now(),name:productName,category,description,price:Number(price),offer,image_url,sizes,stock:Number(stock),active:!!active};memory.products.unshift(p);}
     res.status(201).json(p);
   }catch(e){res.status(500).json({error:e.message});}
 });
