@@ -206,10 +206,10 @@ async function answerCustomer(message, imageParts=[]) {
       const parts = [{text: prompt + "\\n\\nCustomer message: " + (message || (imageParts.length ? "এই ছবির পোশাকটি দেখে সাহায্য করুন।" : "হ্যালো"))}];
       for (const image of imageParts) parts.push({inline_data:{mime_type:image.mimeType,data:image.data}});
       // Retry with Google's currently recommended model if Render still has an older model configured.
-      const configuredModel = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-      const modelsToTry = configuredModel === "gemini-3.5-flash-lite"
+      const configuredModel = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+      const modelsToTry = configuredModel === "gemini-2.5-flash-lite"
         ? [configuredModel]
-        : [configuredModel, "gemini-3.5-flash-lite"];
+        : [configuredModel, "gemini-2.5-flash-lite"];
       for (const model of modelsToTry) {
         const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
           method:"POST",
@@ -266,6 +266,61 @@ async function getMessengerImages(attachments=[]) {
   }
   return images.slice(0,2);
 }
+async function findSimilarKurtis(customerImage) {
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn("GEMINI_API_KEY missing; visual product matching is unavailable");
+    return [];
+  }
+  // Compare the customer's photo against actual catalog photos, rather than sending arbitrary first items.
+  const candidates=(await allProducts(true))
+    .filter(p=>String(p.category||"").toLowerCase()==="kurti" && Number(p.stock??0)>0 && p.image_url)
+    .slice(0,10)
+    .map(p=>{
+      const match=String(p.image_url).match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+      return match ? {product:p,mimeType:match[1],data:match[2]} : null;
+    })
+    .filter(Boolean);
+  if (!candidates.length) return [];
+  const prompt=[
+    "You are a visual fashion catalog matcher.",
+    "The first image is the customer's reference clothing photo.",
+    "After it, there are candidate kurti product photos, each introduced by a numbered label.",
+    "Compare garment type, dominant colors, print/embroidery, neckline, sleeves, and overall style. Ignore background and model identity.",
+    "Only select candidates that visibly resemble the reference. Do not invent visual details or select items just because they are available.",
+    "Return valid JSON only in this exact shape: {\"matches\":[{\"index\":1,\"confidence\":0.82}]}",
+    "Indices are 1-based candidate numbers. Confidence is between 0 and 1. Return at most 3 matches, highest confidence first. If none is reasonably similar, return {\"matches\":[]}."
+  ].join("\\n");
+  const parts=[{text:prompt},{inline_data:{mime_type:customerImage.mimeType,data:customerImage.data}}];
+  candidates.forEach((c,i)=>{parts.push({text:"Candidate "+(i+1)+", price "+Number(c.product.price)+" BDT"});parts.push({inline_data:{mime_type:c.mimeType,data:c.data}})});
+  const configuredModel=process.env.GEMINI_MODEL||"gemini-2.5-flash-lite";
+  const modelsToTry=configuredModel==="gemini-2.5-flash-lite"?[configuredModel]:[configuredModel,"gemini-2.5-flash-lite"];
+  for(const model of modelsToTry) {
+    try {
+      const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,{
+        method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({contents:[{role:"user",parts}],generationConfig:{temperature:0.1,maxOutputTokens:180,responseMimeType:"application/json"}}),
+        signal:AbortSignal.timeout(25000)
+      });
+      const data=await response.json();
+      if(!response.ok) {
+        console.error("Gemini visual matching error ("+model+"):",JSON.stringify(data).slice(0,500));
+        if(response.status===404) continue;
+        return [];
+      }
+      const raw=data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim()||"";
+      const parsed=JSON.parse(raw.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,""));
+      return (Array.isArray(parsed.matches)?parsed.matches:[])
+        .filter(m=>Number.isInteger(Number(m.index)) && Number(m.index)>=1 && Number(m.index)<=candidates.length && Number(m.confidence)>=0.45)
+        .sort((a,b)=>Number(b.confidence)-Number(a.confidence))
+        .slice(0,3)
+        .map(m=>candidates[Number(m.index)-1].product);
+    } catch(e) {
+      console.error("Gemini visual matching request failed:",e.message);
+      return [];
+    }
+  }
+  return [];
+}
 app.get("/health",(req,res)=>res.json({ok:true,name:"Massage-Ai Messenger Sales Bot",database:!!pool}));
 app.get("/webhook",(req,res)=>{
   const mode=req.query["hub.mode"], token=req.query["hub.verify_token"], challenge=req.query["hub.challenge"];
@@ -289,11 +344,17 @@ app.post("/webhook",async(req,res)=>{
       if (budget !== null) {
         await showProductsWithinBudget(psid,budget,category);
       } else if (hasImage && !text) {
-        const similar=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()==="kurti" && Number(p.stock??0)>0 && p.image_url).slice(0,3);
-        if(!similar.length) await sendMessenger(psid,"ছবিটি পেয়েছি 💗 মিলিয়ে দেখার জন্য কুর্তির ছবি ক্যাটালগে যোগ করুন।");
-        else {
-          await sendMessenger(psid,"আপনার ছবির সঙ্গে মিল আছে এমন কুর্তির কিছু ডিজাইন দেখুন 💗\\n"+similar.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা").join("\\n"));
-          for(const p of similar) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) console.warn("Could not send catalog kurti image",p.id); }
+        const customerImages=await getMessengerImages(attachments);
+        if(!customerImages.length) {
+          await sendMessenger(psid,"ছবিটি পেয়েছি 💗 কিন্তু ছবিটি পড়া যাচ্ছে না। দয়া করে পরিষ্কার ছবি আবার পাঠান।");
+        } else {
+          const similar=await findSimilarKurtis(customerImages[0]);
+          if(!similar.length) {
+            await sendMessenger(psid,"ছবির সঙ্গে মিলিয়ে নির্ভরযোগ্য ডিজাইন খুঁজে পাইনি 💗 অ্যাডমিনকে ছবিটি দেখে সাহায্য করতে বলছি। চাইলে কুর্তির বাজেট লিখে পাঠান, যেমন ৫০০ টাকার মধ্যে।");
+          } else {
+            await sendMessenger(psid,"আপনার পাঠানো ছবির রং ও ডিজাইনের সঙ্গে তুলনা করে কাছাকাছি "+similar.length+"টি কুর্তি বেছে নিয়েছি 💗\\n"+similar.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা").join("\\n"));
+            for(const p of similar) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) console.warn("Could not send visually matched kurti image",p.id); }
+          }
         }
       } else if(text && category && /(দেখাও|দেখান|ছবি|pic|photo|show|দাও|দেন|কিনতে|kurti|কুর্তি|2\\s*pis|two\\s*piece)/i.test(text)) {
         const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0).slice(0,5);
