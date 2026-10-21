@@ -167,8 +167,8 @@ async function showProductsWithinBudget(psid, budget, category=null) {
     await sendMessenger(psid,msg);
     return true;
   }
-  const lines = products.map((p,i) => `${i+1}. ${p.name} — ${Number(p.price)} টাকা${p.sizes ? " | সাইজ: "+p.sizes : ""}${p.offer ? " | অফার: "+p.offer : ""}`);
-  await sendMessenger(psid,`অবশ্যই! 💗 ${budget} টাকার মধ্যে স্টকে থাকা ${products.length}টি পোশাক দেখুন:\\n\\n${lines.join("\\n")}\\n\\nযে পোশাকটি পছন্দ হবে তার নম্বর বা নাম লিখুন।`);
+  const lines = products.map((p,i) => `${i+1}. ${Number(p.price)} টাকা${p.sizes ? " | সাইজ: "+p.sizes : ""}${p.offer ? " | "+p.offer : ""}`);
+  await sendMessenger(psid,`অবশ্যই! 💗 ${budget} টাকার মধ্যে স্টকে থাকা ${products.length}টি পোশাক দেখুন:\\n\\n${lines.join("\\n")}\\n\\nপ্রতিটি ডিজাইনের ছবি পাঠানো হচ্ছে 💗`);
   for (const p of products) {
     if (p.image_url) {
       const ok = await sendMessengerImage(psid,p.image_url,p.id);
@@ -288,6 +288,13 @@ app.post("/webhook",async(req,res)=>{
       const budget = text ? extractBudget(text) : null;
       if (budget !== null) {
         await showProductsWithinBudget(psid,budget,category);
+      } else if (hasImage && !text) {
+        const similar=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()==="kurti" && Number(p.stock??0)>0 && p.image_url).slice(0,3);
+        if(!similar.length) await sendMessenger(psid,"ছবিটি পেয়েছি 💗 মিলিয়ে দেখার জন্য কুর্তির ছবি ক্যাটালগে যোগ করুন।");
+        else {
+          await sendMessenger(psid,"আপনার ছবির সঙ্গে মিল আছে এমন কুর্তির কিছু ডিজাইন দেখুন 💗\\n"+similar.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা").join("\\n"));
+          for(const p of similar) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) console.warn("Could not send catalog kurti image",p.id); }
+        }
       } else if(text && category && /(দেখাও|দেখান|ছবি|pic|photo|show|দাও|দেন|কিনতে|kurti|কুর্তি|2\\s*pis|two\\s*piece)/i.test(text)) {
         const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0).slice(0,5);
         if(!matches.length) await sendMessenger(psid, category==="kurti" ? "দুঃখিত 💗 এখন কুর্তি স্টকে নেই।" : "দুঃখিত 💗 এখন টু-পিস স্টকে নেই।");
