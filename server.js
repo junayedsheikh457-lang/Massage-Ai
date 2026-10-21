@@ -53,6 +53,23 @@ async function initDb() {
   if (!colSet.has("stock")) await query("ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0");
   if (!colSet.has("active")) await query("ALTER TABLE products ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE");
   if (!colSet.has("created_at")) await query("ALTER TABLE products ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW()");
+  // Repair legacy numeric IDs that are NOT NULL but have no auto-generated default.
+  // Existing rows are preserved; new rows receive the next sequence value.
+  await query(`DO $
+  DECLARE id_type TEXT; id_default TEXT; id_identity TEXT; max_id BIGINT;
+  BEGIN
+    SELECT data_type, column_default, is_identity
+      INTO id_type, id_default, id_identity
+      FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'products' AND column_name = 'id';
+    IF id_type IN ('smallint', 'integer', 'bigint') AND id_default IS NULL AND id_identity = 'NO' THEN
+      EXECUTE 'CREATE SEQUENCE IF NOT EXISTS products_id_fix_seq';
+      SELECT COALESCE(MAX(id), 0) INTO max_id FROM products;
+      PERFORM setval('products_id_fix_seq', GREATEST(max_id, 1), max_id > 0);
+      EXECUTE 'ALTER TABLE products ALTER COLUMN id SET DEFAULT nextval(''products_id_fix_seq'')';
+      EXECUTE 'ALTER SEQUENCE products_id_fix_seq OWNED BY products.id';
+    END IF;
+  END $;`);
 
   await query(`CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY, customer_name TEXT DEFAULT '', phone TEXT DEFAULT '',
