@@ -274,6 +274,7 @@ async function findSimilarKurtis(customerImage) {
   // Compare the customer's photo against actual catalog photos, rather than sending arbitrary first items.
   const candidates=(await allProducts(true))
     .filter(p=>String(p.category||"").toLowerCase()==="kurti" && Number(p.stock??0)>0 && p.image_url)
+    .filter((p,i,arr)=>arr.findIndex(x=>x.image_url===p.image_url)===i)
     .slice(0,10)
     .map(p=>{
       const match=String(p.image_url).match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
