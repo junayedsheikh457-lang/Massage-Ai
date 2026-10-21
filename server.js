@@ -118,27 +118,76 @@ function signatureOk(req) {
   const expected = "sha256=" + crypto.createHmac("sha256",secret).update(req.rawBody).digest("hex");
   try { return crypto.timingSafeEqual(Buffer.from(received),Buffer.from(expected)); } catch { return false; }
 }
-async function answerCustomer(message) {
+async function answerCustomer(message, imageParts=[]) {
   const products = await allProducts(true);
-  if (process.env.OPENAI_API_KEY) {
-    const catalog = products.map(p => ({name:p.name,price:Number(p.price),offer:p.offer||"",sizes:p.sizes||"",stock:p.stock,description:p.description||""}));
+  const catalog = products.map(p => ({
+    name:p.name, price:Number(p.price), offer:p.offer||"", sizes:p.sizes||"",
+    stock:p.stock, description:p.description||""
+  }));
+  const prompt = [
+    "You are the friendly sales assistant for Fashion Mart.",
+    "Reply naturally in the customer's language, especially Bangla. Keep replies concise and helpful.",
+    "Sell only women's clothing. Use only the product catalog below for prices, sizes, offers and stock; never invent product details.",
+    "If a customer sends a clothing image, describe what you can see and compare it with catalog items. Do not claim an exact match unless supported by the catalog.",
+    "If the product or detail is not listed, politely say you will check with the owner.",
+    "Never promise a special discount; say you can ask the owner.",
+    "Help gather name, phone, delivery address and product/size for an order, but do not claim an order is confirmed until saved by admin.",
+    "Product catalog: " + JSON.stringify(catalog)
+  ].join("\\n");
+  if (process.env.GEMINI_API_KEY) {
     try {
-      const r = await fetch("https://api.openai.com/v1/responses", {
-        method:"POST", headers:{Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,"content-type":"application/json"},
-        body:JSON.stringify({model:process.env.OPENAI_MODEL||"gpt-4.1-mini",input:[
-          {role:"system",content:[{type:"input_text",text:"You are the friendly sales assistant for Fashion Mart. Sell only women's clothing. Reply naturally in the customer's language, especially Bangla. Use only this product catalog for prices, sizes, offers and stock; never invent product details. If a product/detail is not listed, say you will check with the owner. Never promise a special discount; tell them you can ask the owner and create a pending approval request. Help gather name, phone, delivery address and product/size for an order, but do not claim an order is confirmed until saved by admin. Keep replies concise. Catalog: "+JSON.stringify(catalog)}]},
-          {role:"user",content:[{type:"input_text",text:message}]}
-        ]})
+      const parts = [{text: prompt + "\\n\\nCustomer message: " + (message || (imageParts.length ? "এই ছবির পোশাকটি দেখে সাহায্য করুন।" : "হ্যালো"))}];
+      for (const image of imageParts) parts.push({inline_data:{mime_type:image.mimeType,data:image.data}});
+      const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
+        method:"POST",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({
+          contents:[{role:"user",parts}],
+          generationConfig:{temperature:0.4,maxOutputTokens:300}
+        })
       });
       const data = await r.json();
       if (r.ok) {
-        const out = data.output?.flatMap(x=>x.content||[]).find(x=>x.type==="output_text")?.text;
+        const out = data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim();
         if (out) return out;
-      } else console.error("OpenAI error:", JSON.stringify(data).slice(0,500));
-    } catch(e) { console.error("AI request error",e.message); }
+      } else console.error("Gemini API error:", JSON.stringify(data).slice(0,700));
+    } catch(e) { console.error("Gemini request error:",e.message); }
+  } else {
+    console.warn("GEMINI_API_KEY missing; AI replies are disabled. Add GEMINI_API_KEY in Render.");
   }
   if (!products.length) return "আসসালামু আলাইকুম! 💗 Fashion Mart-এ স্বাগতম। নতুন পোশাকের ক্যাটালগ এখনো যোগ করা হয়নি। আপনি কী ধরনের পোশাক খুঁজছেন?";
-  return "ধন্যবাদ 💗 আপনার পছন্দের পোশাকটির নাম বা ছবি/বর্ণনা দিন। সঠিক দাম ও স্টক দেখে জানাচ্ছি। বিশেষ ছাড়ের জন্য মালিকের অনুমতি নিতে হবে।";
+  if (imageParts.length) return "ছবিটি পেয়েছি 💗 তবে এখন AI সেবা পাওয়া যাচ্ছে না। পোশাকটির দাম ও স্টক নিশ্চিত করতে একটু পরে আবার চেষ্টা করুন।";
+  return "ধন্যবাদ 💗 আপনার মেসেজটি পেয়েছি। এই মুহূর্তে AI সেবা পাওয়া যাচ্ছে না—দয়া করে একটু পরে আবার চেষ্টা করুন।";
+}
+async function getMessengerImages(attachments=[]) {
+  const images = [];
+  for (const attachment of attachments) {
+    if (attachment?.type !== "image" || !attachment.payload?.url) continue;
+    try {
+      const url = new URL(attachment.payload.url);
+      const host = url.hostname.toLowerCase();
+      if (url.protocol !== "https:" || !(
+        host === "facebook.com" || host.endsWith(".facebook.com") ||
+        host === "fbcdn.net" || host.endsWith(".fbcdn.net") ||
+        host === "fbsbx.com" || host.endsWith(".fbsbx.com")
+      )) {
+        console.warn("Skipping Messenger image with unexpected host");
+        continue;
+      }
+      const response = await fetch(url, {signal:AbortSignal.timeout(8000)});
+      if (!response.ok) { console.warn("Could not fetch Messenger image:", response.status); continue; }
+      const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      const allowedTypes = new Set(["image/jpeg","image/png","image/webp","image/gif"]);
+      if (!allowedTypes.has(mimeType)) continue;
+      const declaredLength = Number(response.headers.get("content-length") || 0);
+      if (declaredLength > 4 * 1024 * 1024) { console.warn("Messenger image too large"); continue; }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length || buffer.length > 4 * 1024 * 1024) continue;
+      images.push({mimeType,data:buffer.toString("base64")});
+    } catch(e) { console.warn("Messenger image fetch failed:",e.message); }
+  }
+  return images.slice(0,2);
 }
 app.get("/health",(req,res)=>res.json({ok:true,name:"Massage-Ai Messenger Sales Bot",database:!!pool}));
 app.get("/webhook",(req,res)=>{
@@ -152,13 +201,20 @@ app.post("/webhook",async(req,res)=>{
   try {
     if(req.body.object!=="page") return;
     for(const entry of req.body.entry||[]) for(const event of entry.messaging||[]) {
-      const psid=event.sender?.id, text=event.message?.text;
-      if(!psid || !text || event.message?.is_echo) continue;
-      if(/discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
+      const psid=event.sender?.id, message=event.message;
+      if(!psid || !message || message.is_echo) continue;
+      const text=String(message.text||"").trim();
+      const attachments=Array.isArray(message.attachments)?message.attachments:[];
+      const hasImage=attachments.some(a=>a?.type==="image" && a.payload?.url);
+      if(!text && !hasImage) continue;
+      if(text && /discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
         if(pool) await query("INSERT INTO discounts(psid,customer_message) VALUES($1,$2)",[psid,text]);
         else memory.discounts.push({id:Date.now(),psid,customer_message:text,status:"pending"});
         await sendMessenger(psid,"বিশেষ ছাড়ের অনুরোধটি মালিকের কাছে পাঠানোর জন্য নোট করেছি। অনুমতি পেলেই জানাব। 💗");
-      } else await sendMessenger(psid,await answerCustomer(text));
+      } else {
+        const images=hasImage ? await getMessengerImages(attachments) : [];
+        await sendMessenger(psid,await answerCustomer(text,images));
+      }
     }
   } catch(e) { console.error("Webhook processing error:",e); }
 });
