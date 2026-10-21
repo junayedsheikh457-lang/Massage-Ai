@@ -288,6 +288,13 @@ app.post("/webhook",async(req,res)=>{
       const budget = text ? extractBudget(text) : null;
       if (budget !== null) {
         await showProductsWithinBudget(psid,budget,category);
+      } else if(text && category && /(দেখাও|দেখান|ছবি|pic|photo|show|দাও|দেন|কিনতে|kurti|কুর্তি|2\\s*pis|two\\s*piece)/i.test(text)) {
+        const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0).slice(0,5);
+        if(!matches.length) await sendMessenger(psid, category==="kurti" ? "দুঃখিত 💗 এখন কুর্তি স্টকে নেই।" : "দুঃখিত 💗 এখন টু-পিস স্টকে নেই।");
+        else {
+          await sendMessenger(psid, (category==="kurti" ? "কুর্তি" : "টু-পিস")+" কালেকশন থেকে "+matches.length+"টি ডিজাইন দেখুন 💗\\n"+matches.map((p,i)=>(i+1)+". "+p.name+" — "+Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : "")).join("\\n"));
+          for(const p of matches) if(p.image_url) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) await sendMessenger(psid,p.name+" — "+Number(p.price)+" টাকা। ছবিটি পাঠানো যায়নি।"); }
+        }
       } else if(text && /discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
         if(pool) await query("INSERT INTO discounts(psid,customer_message) VALUES($1,$2)",[psid,text]);
         else memory.discounts.push({id:Date.now(),psid,customer_message:text,status:"pending"});
