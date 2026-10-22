@@ -280,60 +280,73 @@ async function getMessengerImages(attachments=[]) {
   return images.slice(0,2);
 }
 async function findSimilarKurtis(customerImage) {
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn("GEMINI_API_KEY missing; visual product matching is unavailable");
-    return [];
-  }
-  // Compare the customer's photo against actual catalog photos, rather than sending arbitrary first items.
-  const candidates=(await allProducts(true))
-    .filter(p=>String(p.category||"").toLowerCase()==="kurti" && Number(p.stock??0)>0 && p.image_url)
-    .filter((p,i,arr)=>arr.findIndex(x=>x.image_url===p.image_url)===i)
-    .slice(0,10)
-    .map(p=>{
-      const match=String(p.image_url).match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
-      return match ? {product:p,mimeType:match[1],data:match[2]} : null;
-    })
-    .filter(Boolean);
-  if (!candidates.length) return [];
-  const prompt=[
-    "You are a visual fashion catalog matcher.",
-    "The first image is the customer's reference clothing photo.",
-    "After it, there are candidate kurti product photos, each introduced by a numbered label.",
-    "Compare garment type, dominant colors, print/embroidery, neckline, sleeves, and overall style. Ignore background and model identity.",
-    "Only select candidates that visibly resemble the reference. Do not invent visual details or select items just because they are available.",
-    "Return valid JSON only in this exact shape: {\"matches\":[{\"index\":1,\"confidence\":0.82}]}",
-    "Indices are 1-based candidate numbers. Confidence is between 0 and 1. Return at most 3 matches, highest confidence first. If none is reasonably similar, return {\"matches\":[]}."
-  ].join("\\n");
-  const parts=[{text:prompt},{inline_data:{mime_type:customerImage.mimeType,data:customerImage.data}}];
-  candidates.forEach((c,i)=>{parts.push({text:"Candidate "+(i+1)+", price "+Number(c.product.price)+" BDT"});parts.push({inline_data:{mime_type:c.mimeType,data:c.data}})});
-  const configuredModel=process.env.GEMINI_MODEL||"gemini-3.5-flash-lite";
-  const modelsToTry=configuredModel==="gemini-3.5-flash-lite"?[configuredModel]:[configuredModel,"gemini-3.5-flash-lite"];
-  for(const model of modelsToTry) {
+  if (!process.env.GEMINI_API_KEY) return null;
+  const products = (await allProducts(true))
+    .filter(p => p.image_url)
+    .filter((p,i,arr) => arr.findIndex(x => x.image_url === p.image_url) === i)
+    .slice(0,12);
+  const candidates = [];
+  for (const product of products) {
     try {
-      const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,{
+      const imageUrl = String(product.image_url || "");
+      const inline = imageUrl.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/);
+      if (inline) {
+        candidates.push({product,mimeType:inline[1],data:inline[2]});
+        continue;
+      }
+      const url = new URL(imageUrl);
+      if (url.protocol !== "https:") continue;
+      const response = await fetch(url, {signal:AbortSignal.timeout(7000)});
+      if (!response.ok) continue;
+      const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      if (!["image/jpeg","image/png","image/webp","image/gif"].includes(mimeType)) continue;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length || buffer.length > 4*1024*1024) continue;
+      candidates.push({product,mimeType,data:buffer.toString("base64")});
+    } catch(e) { console.warn("Could not prepare catalog photo for matching:",e.message); }
+  }
+  if (!candidates.length) return null;
+  const prompt = [
+    "You are a visual fashion catalog matcher.",
+    "The first image is the customer's reference clothing photo. The following images are catalog products, each introduced by a numbered label.",
+    "Compare clothing type, colors, pattern, embroidery, neckline, sleeves and overall design. Ignore background and model identity.",
+    "Return only strong visual matches. Do not match merely because the items are both clothing.",
+    "Return valid JSON only: {\\"matches\\":[{\\"index\\":1,\\"confidence\\":0.85}]}",
+    "Use 1-based candidate indices. Confidence is 0 to 1. Return at most 3 matches. If no close match, return {\\"matches\\":[]}. Only return confidence 0.68 or higher."
+  ].join("\\n");
+  const parts = [{text:prompt},{inline_data:{mime_type:customerImage.mimeType,data:customerImage.data}}];
+  candidates.forEach((c,i) => {
+    parts.push({text:"Catalog item "+(i+1)+", price "+Number(c.product.price)+" BDT"});
+    parts.push({inline_data:{mime_type:c.mimeType,data:c.data}});
+  });
+  const configuredModel = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+  const models = configuredModel === "gemini-3.5-flash-lite" ? [configuredModel] : [configuredModel,"gemini-3.5-flash-lite"];
+  for (const model of models) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
         method:"POST",headers:{"content-type":"application/json"},
         body:JSON.stringify({contents:[{role:"user",parts}],generationConfig:{temperature:0.1,maxOutputTokens:180,responseMimeType:"application/json"}}),
         signal:AbortSignal.timeout(25000)
       });
-      const data=await response.json();
-      if(!response.ok) {
+      const data = await response.json();
+      if (!response.ok) {
         console.error("Gemini visual matching error ("+model+"):",JSON.stringify(data).slice(0,500));
-        if(response.status===404) continue;
-        return [];
+        if (response.status === 404) continue;
+        return null;
       }
-      const raw=data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim()||"";
-      const parsed=JSON.parse(raw.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,""));
-      return (Array.isArray(parsed.matches)?parsed.matches:[])
-        .filter(m=>Number.isInteger(Number(m.index)) && Number(m.index)>=1 && Number(m.index)<=candidates.length && Number(m.confidence)>=0.45)
+      const raw = data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim() || "";
+      const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,""));
+      return (Array.isArray(parsed.matches) ? parsed.matches : [])
+        .filter(m=>Number.isInteger(Number(m.index)) && Number(m.index)>=1 && Number(m.index)<=candidates.length && Number(m.confidence)>=0.68)
         .sort((a,b)=>Number(b.confidence)-Number(a.confidence))
         .slice(0,3)
         .map(m=>candidates[Number(m.index)-1].product);
     } catch(e) {
       console.error("Gemini visual matching request failed:",e.message);
-      return [];
+      return null;
     }
   }
-  return [];
+  return null;
 }
 app.get("/health",(req,res)=>res.json({ok:true,name:"Massage-Ai Messenger Sales Bot",database:!!pool}));
 app.get("/webhook",(req,res)=>{
@@ -358,17 +371,38 @@ app.post("/webhook",async(req,res)=>{
       if (budget !== null) {
         await showProductsWithinBudget(psid,budget,category);
       } else if (hasImage) {
-        const customerImages=await getMessengerImages(attachments);
-        if(!customerImages.length) {
-          await sendMessenger(psid,"ছবিটি পেয়েছি 💗 কিন্তু ছবিটি পড়া যাচ্ছে না। দয়া করে পরিষ্কার ছবি আবার পাঠান।");
-        } else {
-          const similar=await findSimilarKurtis(customerImages[0]);
-          if(!similar.length) {
-            await sendMessenger(psid,"ছবির সঙ্গে মিলিয়ে নির্ভরযোগ্য ডিজাইন খুঁজে পাইনি 💗 অ্যাডমিনকে ছবিটি দেখে সাহায্য করতে বলছি। চাইলে কুর্তির বাজেট লিখে পাঠান, যেমন ৫০০ টাকার মধ্যে।");
+        try {
+          const customerImages = await getMessengerImages(attachments);
+          if (!customerImages.length) {
+            await sendMessenger(psid,"ছবিটি পেয়েছি আপু 💗 ছবিটি খুলতে সমস্যা হচ্ছে। আপনি চাইলে ক্যাটালগের অন্য ড্রেসগুলো দেখুন।");
+            const alternatives = (await allProducts(true)).filter(p=>p.image_url).slice(0,3);
+            for (const p of alternatives) { await sendMessengerImage(psid,p.image_url,p.id); await wait(800); }
           } else {
-            await sendMessenger(psid,"আপনার পাঠানো ছবির রং ও ডিজাইনের সঙ্গে তুলনা করে কাছাকাছি "+similar.length+"টি কুর্তি বেছে নিয়েছি 💗\\n"+similar.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা").join("\\n"));
-            for(const p of similar) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) console.warn("Could not send visually matched kurti image",p.id); }
+            const similar = await findSimilarKurtis(customerImages[0]);
+            if (similar && similar.length) {
+              await sendMessenger(psid,"হ্যাঁ আপু, এই ড্রেসটি আমাদের কাছে আছে। 💗");
+              for (const p of similar) {
+                await sendMessengerImage(psid,p.image_url,p.id);
+                await sendMessenger(psid,Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : ""));
+                await wait(800);
+              }
+            } else if (similar && similar.length === 0) {
+              await sendMessenger(psid,"দুঃখিত আপু, এই ড্রেসটি আমাদের কালেকশনে নেই। 💗 আপনি চাইলে আমাদের ক্যাটালগের অন্য ছবিগুলো দেখে পছন্দ করতে পারেন।");
+              const alternatives = (await allProducts(true)).filter(p=>p.image_url).slice(0,5);
+              for (const p of alternatives) { await sendMessengerImage(psid,p.image_url,p.id); await wait(800); }
+            } else {
+              await sendMessenger(psid,"আপু, ছবিটি পেয়েছি 💗 কিন্তু এই মুহূর্তে ক্যাটালগের সঙ্গে মিলিয়ে দেখতে সমস্যা হচ্ছে। নিচে আমাদের কিছু ড্রেসের ছবি দিলাম।");
+              const alternatives = (await allProducts(true)).filter(p=>p.image_url).slice(0,5);
+              for (const p of alternatives) { await sendMessengerImage(psid,p.image_url,p.id); await wait(800); }
+            }
           }
+        } catch (imageError) {
+          console.error("Customer photo handling failed:",imageError);
+          await sendMessenger(psid,"আপু, ছবিটি পেয়েছি 💗 কিন্তু মিলিয়ে দেখতে সমস্যা হয়েছে। আমাদের ক্যাটালগের অন্য ড্রেসগুলো দেখে নিতে পারেন।");
+          try {
+            const alternatives = (await allProducts(true)).filter(p=>p.image_url).slice(0,3);
+            for (const p of alternatives) { await sendMessengerImage(psid,p.image_url,p.id); await wait(800); }
+          } catch (fallbackError) { console.error("Could not send alternative catalog photos:",fallbackError.message); }
         }
       } else if(text && category && /(দেখাও|দেখান|ছবি|pic|photo|show|দাও|দেন|কিনতে|kurti|কুর্তি|2\\s*pis|two\\s*piece)/i.test(text)) {
         const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0 && p.image_url);
