@@ -13,7 +13,7 @@ const pool = process.env.DATABASE_URL ? new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false }
 }) : null;
-const memory = { products: [], orders: [], discounts: [] };
+const memory = { products: [], orders: [], discounts: [], drafts: [] };
 async function query(sql, params=[]) {
   if (!pool) throw new Error("DATABASE_URL is not configured");
   return pool.query(sql, params);
@@ -87,6 +87,7 @@ async function initDb() {
   await query(`CREATE TABLE IF NOT EXISTS discounts (
     id BIGSERIAL PRIMARY KEY, psid TEXT, customer_message TEXT, status TEXT DEFAULT 'pending',
     created_at TIMESTAMPTZ DEFAULT NOW())`);
+  await query(`CREATE TABLE IF NOT EXISTS reply_drafts (id BIGSERIAL PRIMARY KEY, psid TEXT NOT NULL, customer_message TEXT DEFAULT '', reply_text TEXT DEFAULT '', product_ids JSONB NOT NULL DEFAULT '[]'::jsonb, status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW())`);
 }
 const adminAuth = (req,res,next) => {
   const secret = process.env.ADMIN_PASSWORD;
@@ -104,6 +105,17 @@ async function allProducts(activeOnly=false) {
   }
   return memory.products.filter(p => !activeOnly || p.active);
 }
+async function saveReplyDraft(psid, customerMessage, replyText, products=[]) {
+  const productIds = products.map(p => String(p.id));
+  if (pool) {
+    const r = await query("INSERT INTO reply_drafts(psid,customer_message,reply_text,product_ids,status) VALUES($1,$2,$3,$4::jsonb,'pending') RETURNING *", [String(psid),String(customerMessage||''),String(replyText||''),JSON.stringify(productIds)]);
+    return r.rows[0];
+  }
+  const draft = {id:Date.now(),psid:String(psid),customer_message:String(customerMessage||''),reply_text:String(replyText||''),product_ids:productIds,status:'pending',created_at:new Date().toISOString()};
+  memory.drafts.unshift(draft); return draft;
+}
+async function getReplyDrafts() { return pool ? (await query('SELECT * FROM reply_drafts ORDER BY id DESC LIMIT 200')).rows : memory.drafts; }
+
 async function sendMessenger(psid, text) {
   if (!process.env.PAGE_ACCESS_TOKEN) { console.warn("PAGE_ACCESS_TOKEN missing; cannot send Messenger reply"); return false; }
   const resp = await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(process.env.PAGE_ACCESS_TOKEN)}`, {
