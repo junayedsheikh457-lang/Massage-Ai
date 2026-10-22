@@ -113,6 +113,7 @@ async function sendMessenger(psid, text) {
   if (!resp.ok) { console.error("Messenger send failed:", await resp.text()); return false; }
   return true;
 }
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function sendMessengerImage(psid, imageUrl, productId=null) {
   if (String(imageUrl||"").startsWith("data:image/") && productId) {
     let base = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
@@ -121,16 +122,30 @@ async function sendMessengerImage(psid, imageUrl, productId=null) {
     imageUrl = base + "/product-images/" + encodeURIComponent(productId);
   }
   if (!process.env.PAGE_ACCESS_TOKEN) return false;
+  let url;
   try {
-    const url = new URL(String(imageUrl || ""));
+    url = new URL(String(imageUrl || ""));
     if (url.protocol !== "https:") return false;
-    const resp = await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(process.env.PAGE_ACCESS_TOKEN)}`, {
-      method:"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({recipient:{id:psid},message:{attachment:{type:"image",payload:{url:url.toString(),is_reusable:true}}}})
-    });
-    if (!resp.ok) { console.error("Messenger image send failed:", await resp.text()); return false; }
-    return true;
   } catch(e) { console.error("Invalid product image URL:",e.message); return false; }
+
+  // Send catalog images sequentially with a short pause and retry temporary Meta throttling/errors.
+  for (let attempt=0; attempt<3; attempt++) {
+    try {
+      const resp = await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(process.env.PAGE_ACCESS_TOKEN)}`, {
+        method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({recipient:{id:psid},message:{attachment:{type:"image",payload:{url:url.toString(),is_reusable:true}}}})
+      });
+      if (resp.ok) return true;
+      const errorText = await resp.text();
+      console.error("Messenger image send failed (attempt "+(attempt+1)+"):", errorText);
+      if (attempt===2 || (resp.status<500 && resp.status!==429)) return false;
+    } catch(e) {
+      console.error("Messenger image request failed (attempt "+(attempt+1)+"):",e.message);
+      if (attempt===2) return false;
+    }
+    await wait(900*(attempt+1));
+  }
+  return false;
 }
 app.get("/product-images/:id",async(req,res)=>{
   try {
@@ -155,10 +170,10 @@ function extractBudget(message) {
 }
 async function showProductsWithinBudget(psid, budget, category=null) {
   const products = (await allProducts(true))
-    .filter(p => Number(p.price) > 0 && Number(p.price) <= budget && Number(p.stock ?? 0) > 0 && (!category || String(p.category||"").toLowerCase()===category))
+    .filter(p => Number(p.price) > 0 && Number(p.price) <= budget && Number(p.stock ?? 0) > 0 && p.image_url && (!category || String(p.category||"").toLowerCase()===category))
     .sort((a,b) => Number(a.price)-Number(b.price));
   if (!products.length) {
-    const available = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.stock ?? 0)>0 && (!category || String(p.category||"").toLowerCase()===category));
+    const available = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.stock ?? 0)>0 && p.image_url && (!category || String(p.category||"").toLowerCase()===category));
     const lowest = available.sort((a,b)=>Number(a.price)-Number(b.price))[0];
     const msg = lowest
       ? `দুঃখিত 💗 এখন ${budget} টাকার মধ্যে স্টকে থাকা পোশাক পাইনি। সবচেয়ে কম দামের স্টকে থাকা পোশাক ${Number(lowest.price)} টাকা।`
@@ -169,10 +184,9 @@ async function showProductsWithinBudget(psid, budget, category=null) {
   const lines = products.map((p,i) => `${i+1}. ${Number(p.price)} টাকা${p.sizes ? " | সাইজ: "+p.sizes : ""}${p.offer ? " | "+p.offer : ""}`);
   await sendMessenger(psid,`অবশ্যই! 💗 ${budget} টাকার মধ্যে স্টকে থাকা ${products.length}টি পোশাক দেখুন:\\n\\n${lines.join("\\n")}\\n\\nপ্রতিটি ডিজাইনের ছবি পাঠানো হচ্ছে 💗`);
   for (const p of products) {
-    if (p.image_url) {
-      const ok = await sendMessengerImage(psid,p.image_url,p.id);
-      if (!ok) await sendMessenger(psid,`📸 ${p.name} — ${Number(p.price)} টাকা। ছবিটি পাঠানো যায়নি; অ্যাডমিন প্যানেলে ছবির public HTTPS link ঠিক আছে কি না দেখুন।`);
-    }
+    const ok = await sendMessengerImage(psid,p.image_url,p.id);
+    if (!ok) await sendMessenger(psid,`📸 ${p.name} — ${Number(p.price)} টাকা। এই ছবিটি পাঠানো যায়নি; পরের ছবিগুলো পাঠানোর চেষ্টা করছি।`);
+    await wait(800);
   }
   return true;
 }
@@ -357,11 +371,11 @@ app.post("/webhook",async(req,res)=>{
           }
         }
       } else if(text && category && /(দেখাও|দেখান|ছবি|pic|photo|show|দাও|দেন|কিনতে|kurti|কুর্তি|2\\s*pis|two\\s*piece)/i.test(text)) {
-        const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0);
+        const matches=(await allProducts(true)).filter(p=>String(p.category||"").toLowerCase()===category && Number(p.stock??0)>0 && p.image_url);
         if(!matches.length) await sendMessenger(psid, category==="kurti" ? "দুঃখিত 💗 এখন কুর্তি স্টকে নেই।" : "দুঃখিত 💗 এখন টু-পিস স্টকে নেই।");
         else {
           await sendMessenger(psid, (category==="kurti" ? "কুর্তি" : "টু-পিস")+" কালেকশন থেকে "+matches.length+"টি ডিজাইন দেখুন 💗\\n"+matches.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : "")).join("\\n"));
-          for(const p of matches) if(p.image_url) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) await sendMessenger(psid,"ছবিটি পাঠানো যায়নি। অ্যাডমিন প্যানেলে ছবির লিংক পরীক্ষা করুন।"); }
+          for(const p of matches) { const ok=await sendMessengerImage(psid,p.image_url,p.id); if(!ok) await sendMessenger(psid,"একটি ছবি পাঠানো যায়নি; বাকি ছবিগুলো পাঠানোর চেষ্টা করছি।"); await wait(800); }
         }
       } else if(text && /discount|ছাড়|কম দাম|দরদাম|দাম কম/i.test(text)) {
         if(pool) await query("INSERT INTO discounts(psid,customer_message) VALUES($1,$2)",[psid,text]);
