@@ -380,6 +380,22 @@ app.post("/webhook",async(req,res)=>{
       if(!text && !hasImage) continue;
       const category = /2\s*pis|two\s*piece|two-piece|টু\s*পিস|দুই\s*পিস/i.test(text) ? "two-piece" : /kurti|কুর্তি/i.test(text) ? "kurti" : null;
       const budget = text ? extractBudget(text) : null;
+      // Default manual mode: prepare drafts and avoid Messenger send attempts while Meta restrictions are active.
+      if (String(process.env.MANUAL_MODE || "true").toLowerCase() !== "false") {
+        let replyText = ""; let selectedProducts = [];
+        if (budget !== null) {
+          selectedProducts = (await allProducts(true)).filter(p => Number(p.price)>0 && Number(p.price)<=budget && Number(p.stock ?? 0)>0 && p.image_url && (!category || String(p.category||"").toLowerCase()===category)).sort((a,b)=>Number(a.price)-Number(b.price)).slice(0,10);
+          replyText = selectedProducts.length ? "অবশ্যই আপু! 💗 "+budget+" টাকার মধ্যে "+selectedProducts.length+"টি পোশাক পেয়েছি। ছবিগুলোর সঙ্গে দাম ও সাইজ নিচে দেখুন.\n\n"+selectedProducts.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : "")+(p.offer ? " | "+p.offer : "")).join("\n") : "দুঃখিত আপু 💗 "+budget+" টাকার মধ্যে এখন স্টকে থাকা পোশাক পাইনি। একটু বেশি বাজেটের পোশাক দেখতে চাইলে জানান।";
+        } else if (hasImage) {
+          let customerImages = []; try { customerImages = await getMessengerImages(attachments); } catch(e) { console.warn("Draft image download failed:",e.message); }
+          const similar = customerImages.length ? await findSimilarKurtis(customerImages[0]) : null;
+          if (similar && similar.length) { selectedProducts=similar; replyText="হ্যাঁ আপু, আপনার ছবির সঙ্গে মিলে এমন ডিজাইন আমাদের ক্যাটালগে পেয়েছি। 💗\n\n"+similar.map((p,i)=>(i+1)+". "+Number(p.price)+" টাকা"+(p.sizes ? " | সাইজ: "+p.sizes : "")).join("\n"); }
+          else { selectedProducts=(await allProducts(true)).filter(p=>p.image_url && Number(p.stock ?? 0)>0).slice(0,5); replyText=similar ? "দুঃখিত আপু, এই ডিজাইনটি আমাদের ক্যাটালগে মেলেনি। 💗 বিকল্প হিসেবে নিচের ডিজাইনগুলো দেখতে পারেন।" : "আপু, ছবিটি পেয়েছি 💗 এই মুহূর্তে নিশ্চিতভাবে মিলিয়ে দেখা যায়নি। বিকল্প হিসেবে আমাদের কিছু ডিজাইন দিলাম।"; }
+        } else { replyText = await answerCustomer(text); }
+        await saveReplyDraft(psid,text,replyText,selectedProducts);
+        console.log("Prepared manual reply draft for customer",String(psid).slice(-4));
+        continue;
+      }
       if (budget !== null) {
         await showProductsWithinBudget(psid,budget,category);
       } else if (hasImage) {
@@ -500,6 +516,8 @@ app.patch("/api/products/:id",adminAuth,async(req,res)=>{
     if(!p)return res.sendStatus(404);res.json(p);
   }catch(e){res.status(500).json({error:e.message});}
 });
+app.get("/api/drafts",adminAuth,async(req,res)=>{try{const drafts=await getReplyDrafts();const products=await allProducts(false);res.json(drafts.map(d=>({...d,products:(Array.isArray(d.product_ids)?d.product_ids:[]).map(id=>products.find(p=>String(p.id)===String(id))).filter(Boolean)})));}catch(e){res.status(500).json({error:e.message});}});
+app.patch("/api/drafts/:id",adminAuth,async(req,res)=>{const status=String(req.body?.status||"");if(!["done","dismissed","pending"].includes(status))return res.status(400).json({error:"Invalid status"});try{if(pool){const r=await query("UPDATE reply_drafts SET status=$1 WHERE id=$2 RETURNING *",[status,req.params.id]);if(!r.rows[0])return res.sendStatus(404);res.json(r.rows[0]);}else{const d=memory.drafts.find(x=>String(x.id)===req.params.id);if(!d)return res.sendStatus(404);d.status=status;res.json(d);}}catch(e){res.status(500).json({error:e.message});}});
 app.get("/api/orders",adminAuth,async(req,res)=>{try{res.json(pool?(await query("SELECT * FROM orders ORDER BY id DESC LIMIT 200")).rows:memory.orders);}catch(e){res.status(500).json({error:e.message});}});
 app.patch("/api/orders/:id",adminAuth,async(req,res)=>{
   const status=String(req.body?.status||"");
