@@ -284,7 +284,7 @@ async function findSimilarKurtis(customerImage) {
   const products = (await allProducts(false))
     .filter(p => p.image_url)
     .filter((p,i,arr) => arr.findIndex(x => x.image_url === p.image_url) === i)
-    .slice(0,12);
+    .slice(0,6);
   const candidates = [];
   for (const product of products) {
     try {
@@ -296,7 +296,7 @@ async function findSimilarKurtis(customerImage) {
       }
       const url = new URL(imageUrl);
       if (url.protocol !== "https:") continue;
-      const response = await fetch(url, {signal:AbortSignal.timeout(7000)});
+      const response = await fetch(url, {signal:AbortSignal.timeout(4000)});
       if (!response.ok) continue;
       const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
       if (!["image/jpeg","image/png","image/webp","image/gif"].includes(mimeType)) continue;
@@ -326,7 +326,7 @@ async function findSimilarKurtis(customerImage) {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
         method:"POST",headers:{"content-type":"application/json"},
         body:JSON.stringify({contents:[{role:"user",parts}],generationConfig:{temperature:0.1,maxOutputTokens:180,responseMimeType:"application/json"}}),
-        signal:AbortSignal.timeout(25000)
+        signal:AbortSignal.timeout(12000)
       });
       const data = await response.json();
       if (!response.ok) {
@@ -371,6 +371,8 @@ app.post("/webhook",async(req,res)=>{
       if (budget !== null) {
         await showProductsWithinBudget(psid,budget,category);
       } else if (hasImage) {
+        // Acknowledge immediately so the customer never waits silently for image downloads or AI matching.
+        await sendMessenger(psid,"ছবিটি পেয়েছি আপু 💗 ক্যাটালগের সঙ্গে মিলিয়ে দেখছি, একটু অপেক্ষা করুন।");
         try {
           const customerImages = await getMessengerImages(attachments);
           if (!customerImages.length) {
