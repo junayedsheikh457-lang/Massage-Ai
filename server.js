@@ -281,7 +281,7 @@ async function getMessengerImages(attachments=[]) {
 }
 async function findSimilarKurtis(customerImage) {
   if (!process.env.GEMINI_API_KEY) return null;
-  const products = (await allProducts(true))
+  const products = (await allProducts(false))
     .filter(p => p.image_url)
     .filter((p,i,arr) => arr.findIndex(x => x.image_url === p.image_url) === i)
     .slice(0,12);
